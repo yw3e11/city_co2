@@ -1,5 +1,5 @@
 ---
-title: "EPC Analysis for Portsmouth"
+title: "CO2 emissions in UK cities"
 author: "Phil Wu"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output: html_document
@@ -36,6 +36,9 @@ myPackages <- c("tidyverse",
        "maptools" ,
        "ggmap",
        "ggplot2",
+       "ggsn",
+       "sf",
+       "fmsb", 
        "RColorBrewer",
        #"plyr", # this library clash with dplyr all the time. 
        "png")
@@ -45,6 +48,7 @@ myPackages <- c("tidyverse",
        #"rasterVis" ,
        #"rgeos")
        
+#devtools::install_github("tidyverse/ggplot2")
 
 required_packages <- function(x,y){
  for( i in x ){
@@ -71,12 +75,25 @@ required_packages((myPackages),"http://cran.rstudio.com/")
 
 **[Note]** _When use `read.csv`, columns with strings will by default be assigned as "factors". Factors are faster in speed, but in this case, would cause all blank cells to be "NA". **Use `"stringAsFactor = FALSE"` to avoid this.**_
 
-```{r, import emission data, include=F}
+**[Note]** Mikey's method of changing names
+namesFuels <-
+  c('Gas boiler' = "1 Gas",
+    "Electricity (storage heaters)" = "Electricity:\nstorage heaters",
+    "Oil/wood/solid fuels/biomass/other" = "Oil, wood\nsolid fuels\nbiomass, other",
+    "Other electricity (e.g. heat pump)" = "Other electricity\ne.g. ground source\nheat pumps")
+
+
+hhAttributesDT$name <- plyr::revalue(ba_heatSourceReduced, namesFuels)]
+
+
+```{r import emission data, include=F}
 #read excel directly
 #readxl::read_excel("", sheet  , skip = 1, )
 
 co2_raw <- read.csv("emission_2005_2015_r.csv", header = T, sep = ",", stringsAsFactors = FALSE)
 head(co2_raw)
+
+temp <- data.frame(unique(co2_raw$LAD14NM))
 ```
 
 The `co2_raw` dataset contains the co2 emission of all local authorities from 2005 to 2015. It includes many rows for regions (e.g. Lancashire Total), rather than local authorities. These rows can be identified as the `LAD14CD` column is blank.  First to find out how many of them are included in the dataset. 
@@ -100,8 +117,27 @@ It is found that `r n_regionData` rows are for regions so should be removed from
 ```{r}
 # Compare industry v.s. residential emissions within Greater London
 # First to show the header of all columns included in orginal dataset
-colnames(co2_raw)
+colnames(co2_raw) 
 ```
+
+```{r}
+SotonTheme <- theme_classic()
+
+co2_raw %>% 
+  filter(N..LULUCF.Net.Emissions > 0) %>% 
+  mutate(difference = abs(Grand.Total - Industry.and.Commercial.Total - Domestic.Total - Transport.Total)) %>% 
+  mutate(percent = difference / Grand.Total) %>% 
+  group_by(Year) %>% 
+  summarise(mean = mean(difference / Grand.Total)) %>% 
+  ggplot()+
+    geom_line(aes(Year, mean))+
+    geom_point(aes(Year, mean))+
+    geom_text(aes(Year, mean, label=round(mean,4), vjust = -1))+
+  SotonTheme
+  
+
+```
+
 
 ```{r, include=F}
 co2_la <- co2_raw %>% 
@@ -143,15 +179,15 @@ The diagram below shows the per capital CO2 emissions of Portsmouth (green) and 
 #co2_la$category[co2_la$City == "Southampton"] <- "Southampton"
 #co2_la$category[co2_la$City == "Portsmouth"] <- "Southampton"
 
-fig.co2_la <- ggplot() +
+ggplot() +
   geom_line(data = co2_la, aes(x = Year, y = Person, group = City), colour = "grey", size = 0.5) + 
   geom_line(data = co2_la[City == "Southampton"], aes(x = Year, y = Person), colour = "red")+
   geom_line(data = co2_la[City == "Portsmouth"], aes(x = Year, y = Person), colour = "green") +
-  ylab("CO2 per person")  
+  ylab("CO2 per person")  +
   #xlab("Year") 
-  #theme(legend.position = "right")
+  theme(legend.position = "right")+
+  SotonTheme
 
-fig.co2_la
 ```
 
 
@@ -190,10 +226,9 @@ fig.co2_portsmouth <- ggplot(data = co2_portsmouth)+
 #colnames(co2_portsmouth)
 fig.co2_portsmouth
 
-(co2_portsmouth$Person[co2_portsmouth$Year==2005] - co2_portsmouth$Person[co2_portsmouth$Year==2015])/co2_portsmouth$Person[co2_portsmouth$Year==2005]
+#(co2_portsmouth$Person[co2_portsmouth$Year==2005] - co2_portsmouth$Person[co2_portsmouth$Year==2015])/co2_portsmouth$Person[co2_portsmouth$Year==2005]
 
 ```
-
 
 
 ## Compare emission by regions
@@ -300,6 +335,8 @@ fig.co2_2AreasInLondon
 
 ## All areas excluding London 
 
+### Population comparison
+
 It is now revealed that the emission in city of London is significantly higher than that of other areas due to its very low population, as shown in figure below. 
 
 ```{r, include=F}
@@ -328,72 +365,141 @@ fig.cityPopulation_london_vs_others
 
 The figure below shows the emission from areas outside city of London. 
 ```{r}
-co2_la_excLondon <- co2_la %>% 
-  filter(City != "City of London")
 
-fig.city_excLondon <- ggplot()+
-  geom_line(data=co2_la_excLondon, aes(x=Year, y=Person, group=City), size = 0.3)+
-  labs(y="CO2 per person")
-
-fig.city_excLondon
-
-
+co2_la %>% 
+  filter(City != "City of London") %>% 
+  mutate(isPortsmouth = ifelse(City == "Portsmouth", "Portsmouth", "Other cities")) %>% 
+  ggplot()+
+    geom_hline(yintercept = 0, linetype=3, colour="black") +
+    geom_line(aes(x = Year, 
+                  y = Person, 
+                  group = interaction(City, isPortsmouth), 
+                  colour=isPortsmouth), 
+              size = 0.5) + 
+    scale_colour_manual(values = c("Other cities"="grey", "Portsmouth" = "green")) + 
+    labs(y="CO2 per person", 
+         title="City level emissions 2005 - 2015", 
+         colour = "Legend")
 
 ```
 
-One city has shown a dramatic fall, all the way to a negtive value in CO2 emission. 
+```{r}
+class(co2_la$Year)
+
+co2_la %>% 
+  distinct(City) %>% 
+  nrow()
+```
+
+One city has shown a dramatic fall, all the way to a negtive value in CO2 emission. The city is Northumberland. It is also found to be the only city with negative emissions. 
 
 ```{r, include=F}
 # Arrange table (ascending / descending)
-arrange(co2_raw, Per.Capita.Emissions..t.)
+#arrange(co2_raw, Per.Capita.Emissions..t.)
 
 #Find out the city with lowest (ascending) per capita emission 
-arrange(co2_la_excLondon, Person)[1,"City"]
+arrange(co2_la, Person)[1,"City"]
 ```
 
 ## Northumberland
 
 ```{r}
-co2_northumberland_detailed <- co2_raw %>% 
+co2_northumberland_detailed <- 
+
+colour_sector <- length(unique(co2_raw$Sector))
+
+
+
+palette_Dark2 <- colorRampPalette(brewer.pal(8, "Dark2"))
+
+cC_londonCities <- length(unique(co2_london$City))
+
+dic_Sector <- c("Year" = "Year", 
+         "Industry_elec" = "A..Industry.and.Commercial.Electricity", 
+         "Industry_gas" = "B..Industry.and.Commercial.Gas", 
+         "Industry_install" = "C..Large.Industrial.Installations", 
+         "Industry_other" = "D..Industrial.and.Commercial.Other.Fuels", 
+         "Industry_agriculture" = "E..Agriculture", 
+         "Domestic_ele" = "F..Domestic.Electricity", 
+         "Domestic_gas" = "G..Domestic.Gas", 
+         "Domestic_other" = "H..Domestic..Other.Fuels.", 
+         "Transport_ARoad" = "I..Road.Transport..A.roads.", 
+         "Transport_motorway" = "J..Road.Transport..Motorways.", 
+         "Transport_minor" = "K..Road.Transport..Minor.roads.", 
+         "Transport_rail" = "L..Diesel.Railways", 
+         "Transport_other" = "M..Transport.Other", 
+         "LandUse" = "N..LULUCF.Net.Emissions")
+
+co2_raw %>% 
   filter(LAD14NM == "Northumberland") %>%  # filter out blank names
   dplyr::select(Year, 
-         Industry_elec = A..Industry.and.Commercial.Electricity, 
-         Industry_gas = B..Industry.and.Commercial.Gas, 
-         Industry_install = C..Large.Industrial.Installations, 
-         Industry_other = D..Industrial.and.Commercial.Other.Fuels, 
-         Industry_agriculture = E..Agriculture, 
-         Domestic_ele = F..Domestic.Electricity, 
-         Domestic_gas = G..Domestic.Gas, 
-         Domestic_other = H..Domestic..Other.Fuels., 
-         Transport_ARoad = I..Road.Transport..A.roads., 
-         Transport_motorway = J..Road.Transport..Motorways., 
-         Transport_minor = K..Road.Transport..Minor.roads., 
-         Transport_rail = L..Diesel.Railways, 
-         Transport_other = M..Transport.Other, 
-         LandUse = N..LULUCF.Net.Emissions) %>% 
-  gather(key = Sector, value = Emission, -Year)
-
-
-cC_northumberland <- length(unique(co2_northumberland_detailed$Sector))
-
-ggplot()+
-  geom_bar(data=co2_northumberland_detailed, aes(x=Year, y=Emission, fill=Sector), 
-           stat="Identity") + 
-  scale_fill_manual(values=palette_Dark2(cC_northumberland))+
-  labs(title="Northumberland") +
-  theme(legend.position = "right")+
-  geom_hline(yintercept = 0)+
-  scale_x_continuous(limits=c(2004.5,2015.5), breaks=c(2005:2015,1))
+         `Industry/commericial electricity` = A..Industry.and.Commercial.Electricity, 
+         `Industry/commericial gas` = B..Industry.and.Commercial.Gas, 
+         `Large industry installations` = C..Large.Industrial.Installations, 
+         `Industry/commercial other fuels` = D..Industrial.and.Commercial.Other.Fuels, 
+         `Agriculture` = E..Agriculture, 
+         `Domestic electricity` = F..Domestic.Electricity, 
+         `Domestic gas` = G..Domestic.Gas, 
+         `Domestic other fuels` = H..Domestic..Other.Fuels., 
+         `Transport A road` = I..Road.Transport..A.roads., 
+         `Transport motorway` = J..Road.Transport..Motorways., 
+         `Transport minor roads` = K..Road.Transport..Minor.roads., 
+         `Railways` = L..Diesel.Railways, 
+         `Transport other` = M..Transport.Other, 
+         `Land use` = N..LULUCF.Net.Emissions) %>% 
+  gather(key = Sector, value = Emission, -Year) %>% 
+  mutate(xxx = n_distinct(Sector)) %>% 
+  ggplot(aes(x=Year, y=Emission, fill= Sector ))+
+    geom_bar(stat="Identity") + 
+    discrete_scale("fill", "manual", palette_Dark2)+
+    labs(title="Northumberland") +
+    theme(legend.position = "right")+
+    geom_hline(yintercept = 0)+
+    scale_x_continuous(limits=c(2004.5,2015.5), breaks=c(2005:2015,1))
+  
 
 ```
 
+```{r}
+co2_raw %>% 
+  filter(LAD14NM == "Manchester") %>%  # filter out blank names
+  dplyr::select(Year, 
+         `Industry/commericial electricity` = A..Industry.and.Commercial.Electricity, 
+         `Industry/commericial gas` = B..Industry.and.Commercial.Gas, 
+         `Large industry installations` = C..Large.Industrial.Installations, 
+         #`Industry/commercial other fuels` = D..Industrial.and.Commercial.Other.Fuels, 
+         #`Agriculture` = E..Agriculture, 
+         `Domestic electricity` = F..Domestic.Electricity, 
+         `Domestic gas` = G..Domestic.Gas, 
+         #`Domestic other fuels` = H..Domestic..Other.Fuels., 
+         `Transport A road` = I..Road.Transport..A.roads., 
+         `Transport motorway` = J..Road.Transport..Motorways., 
+         `Transport minor roads` = K..Road.Transport..Minor.roads., 
+         #`Railways` = L..Diesel.Railways, 
+         `Transport other` = M..Transport.Other) %>%  
+         #`Land use` = N..LULUCF.Net.Emissions) %>% 
+  gather(key = Sector, value = Emission, -Year) %>% 
+  mutate(xxx = n_distinct(Sector)) %>% 
+  group_by(Year) %>% 
+  summarise(sum = sum(Emission))
+  ggplot(aes(x=Year, y=Emission, fill= Sector ))+
+    geom_area(stat="Identity") + 
+    discrete_scale("fill", "manual", palette_Dark2)+
+    labs(title="Manchester") +
+    theme(legend.position = "right")+
+    geom_hline(yintercept = 0)+
+    scale_x_continuous(limits=c(2004.5,2015.5), breaks=c(2005:2015,1))
+
+(3194-2252)/3194
+```
 
 
 
 ## Portsmouth - emission change projection
 
 ```{r}
-fig.co2_portsmouth
+fig.co2_portsmouth+
+  SotonTheme
 
 
 
@@ -455,6 +561,33 @@ fig.Portsmouth_detailed <- ggplot(data=co2_portsmouth_detailed)+
 
 grid.arrange(fig.Portsmouth_category, fig.Portsmouth_detailed, ncol=2, widths=c(1,2), top = "Portsmouth total emission (tCO2e) 2005 - 2015")
 
+co2_raw %>% 
+  filter(LAD14NM == "Portsmouth") %>%  # filter out blank names
+  dplyr::select(Year, 
+         `Industry/commericial electricity` = A..Industry.and.Commercial.Electricity, 
+         `Industry/commericial gas` = B..Industry.and.Commercial.Gas, 
+         `Large industry installations` = C..Large.Industrial.Installations, 
+         `Industry/commercial other fuels` = D..Industrial.and.Commercial.Other.Fuels, 
+         `Agriculture` = E..Agriculture, 
+         `Domestic electricity` = F..Domestic.Electricity, 
+         `Domestic gas` = G..Domestic.Gas, 
+         `Domestic other fuels` = H..Domestic..Other.Fuels., 
+         `Transport A road` = I..Road.Transport..A.roads., 
+         `Transport motorway` = J..Road.Transport..Motorways., 
+         `Transport minor roads` = K..Road.Transport..Minor.roads., 
+         `Railways` = L..Diesel.Railways, 
+         `Transport other` = M..Transport.Other, 
+         `Land use` = N..LULUCF.Net.Emissions) %>% 
+  gather(key = Sector, value = Emission, -Year) %>% 
+  mutate(xxx = n_distinct(Sector)) %>% 
+  ggplot(aes(x=Year, y=Emission, fill= Sector ))+
+    geom_bar(stat="Identity") + 
+    discrete_scale("fill", "manual", palette_Dark2)+
+    labs(title="Portsmouth") +
+    theme(legend.position = "right")+
+    geom_hline(yintercept = 0)+
+    scale_x_continuous(limits=c(2004.5,2015.5), breaks=c(2005:2015,1))
+  
 
 ```
 
@@ -508,7 +641,9 @@ ggplot(data=co2_portsmouth_detailed)+
            stat="Identity") + 
   geom_smooth(data=co2_portsmouth_category, aes(x=Year, y=Emission, group=Category), alpha=0, colour="blue", size=0.5, position = "stack")+
   scale_fill_manual(values=palette_RYG(cC_portsmouth_detailed))+
-  theme(legend.position = "right")
+  theme(legend.position = "right")+
+  theme_minimal()+
+  scale_y_continuous(expand=c(0,0))
 
 
 ```
@@ -532,7 +667,8 @@ ggplot(data=co2_portsmouth_detailed)+
   scale_fill_manual(values=palette_RYG(cC_portsmouth_detailed))+
   theme(legend.position = "right")+
   scale_x_continuous(limits = c(2004.5, 2017.2) , breaks = c(2005:2015,1), expand = c(0,0.25))+
-  geom_text(data=co2Reduction_portsmouth, aes(x=2015, y=Emission, label=paste(Category,"\n",diff, sprintf('\u2193'))), position = position_stack(vjust=0.5), hjust=-0.3)
+  geom_text(data=co2Reduction_portsmouth, aes(x=2015, y=Emission, label=paste(Category,"\n",diff, sprintf('\u2193'))), position = position_stack(vjust=0.5), hjust=-0.3)+
+  labs(title="Portsmouth emissions by sector")
 
 ```
 
@@ -544,10 +680,47 @@ ggplot(data = co2_portsmouth_category , aes(x=Year, y=Emission, fill= Category))
   scale_fill_brewer(palette = "Paired")+
   scale_x_continuous(limits = c(2004.5, 2016.9) , breaks = c(2005:2015,1), expand = c(0,0.25))+
   theme(legend.position = "right")+
-  geom_text(data=co2Reduction_portsmouth, aes(x=2015, y=Emission, label=paste(diff, sprintf('\u2193'))), position = position_stack(vjust=0.5), hjust=-0.6)
+  geom_text(data=co2Reduction_portsmouth, aes(x=2015, y=Emission, label=paste(diff, sprintf('\u2193'))), position = position_stack(vjust=0.5), hjust=-0.6)+
+  labs(title="Portsmouth")
 
 
 ```
+
+```{r}
+co2_manchester <- co2_la[City == "Manchester"]
+co2_manchester_detailed <- co2_raw %>% 
+  filter(LAD14NM == "Manchester") %>%  # filter out blank names
+  dplyr::select(Year, 
+         `Industry/commericial electricity` = A..Industry.and.Commercial.Electricity, 
+         `Industry/commericial gas` = B..Industry.and.Commercial.Gas, 
+         `Large industry installations` = C..Large.Industrial.Installations, 
+         `Industry/commercial other fuels` = D..Industrial.and.Commercial.Other.Fuels, 
+         `Agriculture` = E..Agriculture, 
+         `Domestic electricity` = F..Domestic.Electricity, 
+         `Domestic gas` = G..Domestic.Gas, 
+         `Domestic other fuels` = H..Domestic..Other.Fuels., 
+         `Transport A road` = I..Road.Transport..A.roads., 
+         `Transport motorway` = J..Road.Transport..Motorways., 
+         `Transport minor roads` = K..Road.Transport..Minor.roads., 
+         `Railways` = L..Diesel.Railways, 
+         `Transport other` = M..Transport.Other, 
+         `Land use` = N..LULUCF.Net.Emissions) %>% 
+  gather(key = Sector, value = Emission, -Year)
+
+co2_manchester %>% 
+  head()
+
+fit_manchester <- lm(Total ~ Year, data = co2_manchester) 
+
+pred_co2_manchester <- data.frame(pred_co2 = predict(fit_manchester, p_year), Year = p_year)
+
+
+
+```
+
+
+
+
 
 ## Regression
 
@@ -582,10 +755,122 @@ ggplot()+
   geom_point(data = co2_portsmouth, aes(x = Year, y = Person))+
   geom_smooth(data = co2_portsmouth, aes(x=Year, y=Person), size=0, colour="blue")+
   scale_x_continuous( limits = c(2005,2050), breaks = seq(from = 2005, to=2050, by=5) )+
-  scale_y_continuous(limits=c(0,7), name = "Per capita emission")
+  scale_y_continuous(limits=c(0,7), name = "Per capita emission")+
+  labs(title="Projection using 10 years of data")
 
 
 ```
+
+## Include contributions from PV
+
+			            Conservative		Average			  Generous
+Count		          4,093				    18,766			  46,546
+Sum kWp		        16,041				  54,894			  143,117
+kWh/yr		        16041000			  54894000		  143117000
+T CO2e		        5639.37396			19298.53464		50314.21252
+Population	      212000			  	212000			  212000
+T CO2e / person	  0.026600821		  0.091030824		0.237331191
+
+```{r}
+head(pred_co2_portsmouth)
+
+
+as.data.table(pred_co2_portsmouth)[Year == 2030]$pred_co2
+
+portsmouth_scenario <- data.frame(Scenario = c("Conservative", "Average", "Generous"), 
+                                  PV_count=c(4093,	18766, 46546),
+                                  kWp = c(16041, 54894,143117)) %>%
+  mutate(co2_2015 = as.data.table(co2_portsmouth[Year == 2015])$Person ) %>% 
+  mutate(co2_2020 = as.data.table(pred_co2_portsmouth)[Year == 2020]$pred_co2 ) %>% 
+  mutate(kWh = kWp * 1000) %>% 
+  mutate(population = 212000) %>% 
+  mutate(kWh_person = kWh / population) %>% 
+  mutate(co2_factor = 0.35156 ) %>% 
+  mutate(co2_T = kWh * co2_factor / 1000) %>% 
+  mutate(co2_person_T = co2_T / population) %>% 
+  mutate(saving_percent = co2_person_T / co2_2020)
+
+head(portsmouth_scenario)
+
+
+portsmouth_scenario_2020 <- portsmouth_scenario %>% 
+  dplyr::select(Scenario, co2_person_T)
+  
+portsmouth_scenario_2020[1,2]
+
+
+
+#as.list(portsmouth_scenario_2030[2])[1]
+
+portsmouth_result2 <- data.frame(Year = c(2015, 2020), 
+                                Original=c(as.data.table(co2_portsmouth[Year == 2015])$Person ,
+                                           as.data.table(pred_co2_portsmouth)[Year == 2020]$pred_co2 ), 
+                                Conservative = c(as.data.table(co2_portsmouth[Year == 2015])$Person ,
+                                                 as.data.table(pred_co2_portsmouth)[Year == 2020]$pred_co2 - 
+                                                   portsmouth_scenario_2020[1,2]) , 
+                                Average = c(as.data.table(co2_portsmouth[Year == 2015])$Person ,
+                                                 as.data.table(pred_co2_portsmouth)[Year == 2020]$pred_co2 - 
+                                              portsmouth_scenario_2020[2,2]) , 
+                                Generous = c(as.data.table(co2_portsmouth[Year == 2015])$Person ,
+                                                 as.data.table(pred_co2_portsmouth)[Year == 2020]$pred_co2 - 
+                                               portsmouth_scenario_2020[3,2]) 
+                                ) 
+
+portsmouth_result2 %>% 
+  gather(key , value , -Year) -> portsmouth_result
+
+
+#pred_co2_portsmouth %>% 
+#  filter(Year == 2015 | Year == 2020) %>% 
+#  mutate(Scenario = as.character())
+
+#head(portsmouth_result2)
+```
+
+
+```{r}
+
+ggplot(data = co2_portsmouth)+
+  geom_smooth(aes(x=Year, y=Person), alpha = 0.2, size = 0)+
+  geom_line(aes(x = Year, y = Person)) +
+  geom_point(aes(x = Year, y = Person)) +
+  geom_text(aes(x=Year , y=Person, label= round(Person, 1)), vjust=3, size=3   ) +
+  scale_y_continuous(sec.axis = sec_axis(~. / co2_portsmouth$Person[co2_portsmouth$Year == 2005], 
+                    labels = scales::percent),
+                    limits = c(3.5,7), 
+                    expand = c(0, 0.1)) + 
+  scale_x_continuous(expand = c(0,0.25), breaks = seq(2005,2015,1)) +
+  labs(y = expression(Per~capita~CO[2]~emission~(T)), 
+       title= "Portsmouth 2005 - 2015") +
+  geom_hline(yintercept = co2_portsmouth$Person[co2_portsmouth$Year == 2005], size=0.1, linetype=2)
+  #geom_point(data=p_portsmouth, aes(x=p_year, y=p_co2))
+  #scale_y_continuous(labels = scales::percent)
+
+
+ggplot()+
+  geom_smooth(data=co2_portsmouth, aes(x=Year, y=Person), size = 0, colour = "black")+  
+  geom_line(data=co2_portsmouth, aes(x=Year, y=Person), size = 0.3, colour = "black")+  
+  geom_point(data=co2_portsmouth, aes(x=Year, y=Person))+
+  geom_line(data = portsmouth_result2, aes(x=Year, y=Original) , linetype=2)+
+  geom_hline(yintercept = 6.5, linetype=2, size= 0.2)+
+  geom_ribbon(data= portsmouth_result2, aes(x=Year, ymin = Generous , ymax = Conservative ), 
+              fill="red", alpha=0.3 )+
+  geom_text(data= portsmouth_result2, aes(x=2020, y = 2.99, label="2.99"), vjust = 1.5, hjust=1)+
+  geom_text(data=co2_portsmouth, aes(x=Year , y=Person, label= round(Person, 1)), vjust=-2, size=3 ) +
+  scale_y_continuous(sec.axis = sec_axis(~. / co2_portsmouth$Person[co2_portsmouth$Year == 2005], 
+                    labels = scales::percent),
+                    limits = c(2.5,7), 
+                    expand = c(0, 0.1)) +
+  scale_x_continuous(breaks = seq(2005, 2020,5), expand = c(0.02,0.02))+
+  theme_light()+
+  labs(y="Carbon emissions per person, T")
+  #scale_y_continuous(limits = c(0,7))
+
+ggsave("prediction_portsmouth.png", height=4, width = 8)
+
+```
+
+
 
 
 ## UK data to compare
@@ -593,7 +878,7 @@ ggplot()+
 Use the UK national dataset (from 1970 to 2015) to train a linear model. The results show a very good fit with r square of 0.92. But is this model the same with the previous one which was obtained by 10 years' data (2005 - 2015)? 
 
 ```{r}
-uk_emission <- read_csv("../Emissions/UK_total_1070-2015_2.csv", col_names = T)
+uk_emission <- read_csv("../../Emissions/UK_total_1070-2015_2.csv", col_names = T)
 
 uk_emission_post2005 <- uk_emission %>% 
   filter(Year >= 2005)
@@ -629,15 +914,39 @@ ggplot()+
   geom_line(data=p_uk, aes(x=Year, y=Emission_est, group=Source, colour=Source)) +
   geom_vline(xintercept = c(2030, 2050), size=0.1)+
   geom_hline(yintercept = 0, size=0.3) +
-  geom_point(dat=p_scenario, aes(x=Year, y=Emission_est, colour=Source)) +
+  geom_point(data=p_scenario, aes(x=Year, y=Emission_est, colour=Source)) +
   geom_text(data=p_scenario, aes(x=Year, y=Emission_est, label=Emission_est, colour=Source),
-            vjust=-1, hjust=-0.2 )+
+            vjust=-0.5, hjust=-0.1 )+
   scale_x_continuous( limits = c(1970,2054), breaks = seq(1970, 2050, 10) )+
-  labs(title = "UK emission 1970 - 2015", 
+  labs(title = "Projection using 10 vs 25 years of data", 
        y = expression(Total~emission~Mt~CO[2][e]), 
        colour="Data range")
 
 ```
+
+
+```{r}
+head(uk_emission)
+
+as.data.table(uk_emission)[Year == 2008]
+
+ggplot()+
+  geom_rect(aes(xmin=2005, xmax=2015, ymin=-Inf, ymax=Inf), fill="grey", alpha=0.6)+
+  geom_point(data=uk_emission, aes(x=Year, y=`Total emission`), colour="black") +
+  geom_line(data=p_uk, aes(x=Year, y=Emission_est, group=Source, colour=Source)) +
+  geom_vline(xintercept = c(2030, 2050), size=0.1)+
+  geom_hline(yintercept = 0, size=0.3) +
+  geom_point(data=p_scenario, aes(x=Year, y=Emission_est, colour=Source)) +
+  geom_point(data=as.data.table(uk_emission)[Year == 2008], 
+             aes(x=Year, y=`Total emission`), colour = "red", size = 2) +
+  geom_text(data=p_scenario, aes(x=Year, y=Emission_est, label=Emission_est, colour=Source),
+            vjust=-0.5, hjust=-0.1 )+
+  scale_x_continuous( limits = c(1970,2054), breaks = seq(1970, 2050, 10) )+
+  labs(title = "Projection using 10 vs 25 years of data", 
+       y = expression(Total~emission~Mt~CO[2][e]), 
+       colour="Data range")
+```
+
 
 ## Make prediction by sectors
 
@@ -652,11 +961,11 @@ head(co2_portsmouth_detailed)
 
 
 ```{r}
-library(lme4)
+#library(lme4)
 
-fits_portsmouth <- lmList(Emission ~ Year | Category, data = co2_portsmouth_category)
-fits_portsmouth
-summary(fits_portsmouth)
+#fits_portsmouth <- lmList(Emission ~ Year | Category, data = co2_portsmouth_category)
+#fits_portsmouth
+#summary(fits_portsmouth)
 
 ```
 
@@ -776,7 +1085,9 @@ ggplot()+
   geom_point(data=pred_co2_person_portsmouth_sector,aes(x=Year,y=pred_co2,colour=Sector),position="stack")+
   geom_point(data=pred_co2_portsmouth, aes(x=Year, y=pred_co2), colour="black", alpha=1, shape=8, size=2)+
   scale_x_continuous(limits=c(2005,2050)) +
-  scale_y_continuous(limits=c(0,7))
+  scale_y_continuous(limits=c(0,7))+
+  labs(title="Portsmouth emission projection by sector", 
+       y = "Carbon emissions by person")
 ```
 
 
@@ -790,7 +1101,7 @@ summary(fits_person_portsmouth_sector$`Domestic electricity`)$r.square
 ## 5 example cities
 London, Southampton, Birminghamd, Liverpool, Portsmouth
 ```{r}
-cityExample_list <- c("London", "Southampton", "Birmingham", "Liverpool", "Portsmouth")
+cityExample_list <- c("London", "Southampton", "Birmingham", "Liverpool", "Portsmouth", "Manchester")
 cityExample <- co2_la %>% 
   filter(City %in% cityExample_list | Region == "Greater London" ) %>% 
   mutate(City=ifelse(Region == "Greater London", "Greater London", City)) %>% 
@@ -801,9 +1112,11 @@ cityExample <- co2_la %>%
 ggplot(data=cityExample)+
   geom_line(aes(x=Year, y=perCapita, group=City, colour=City))+
   geom_point(aes(x=Year, y=perCapita, group=City, colour=City))+
+  theme_minimal()+
   scale_color_brewer(palette = "Set1")+
   scale_x_continuous(breaks = seq(2005,2015,1))+
-  labs(y=expression(Per~capita~CO[2]~emissions~"(T)"))+ 
+  labs(y=expression(Per~capita~CO[2]~emissions~"(T)") , 
+       title = "CO2 emissions in cities")+ 
   theme(legend.position = c(.98, .98),
         legend.justification = c("right", "top"),
         legend.box.just = "right",
@@ -811,7 +1124,7 @@ ggplot(data=cityExample)+
 
 cityExample
 unique(co2_la$City)
-
+ggsave("city_emission.png", height=4, width=8)
 ```
 Average reduction from 2005 to 2015
 
@@ -823,6 +1136,629 @@ cityExample %>%
 ```
 
 
+```{r}
+energy_month <- read_csv("../../Energy_UK/Data_energy/UK_monthly_energy_2018_weathered.csv", col_names = T) %>%  
+  gather(key = "Sector", value = "mtoe", -Year, -Month) %>% 
+  mutate(mtoe = as.numeric(mtoe)) %>% 
+  mutate( Category = ifelse(grepl("unadjusted", Sector), "unadjusted", "adjusted")) %>% 
+  mutate(Sector = gsub("unadjusted_|adjusted_","",Sector)) %>% 
+  mutate(Period = as.Date(paste("01", Month, Year), format="%d %b %Y")) %>% 
+  filter(Category=="adjusted" & Sector != "Total")
+
+head(energy_month)
+#colnames()
+```
+
+
+
+## Monthly energy consumption by fuel types
+
+```{r}
+class(energy_month$Period)
+#class(uk_emission_year$Period)
+
+
+energy_plot <- energy_month %>% 
+  filter(Category == "adjusted" & Year > 2010 & Sector != "Total")
+
+uk_emission_year <- uk_emission %>% 
+  mutate(Period = as.Date(paste("01", "January", Year), format="%d %b %Y"))
+
+head(uk_emission_year)
+ggplot(uk_emission_year)+
+  geom_point(aes(x=Period, y=`Total emission`), colour="black") 
+
+ggplot()+
+  geom_area(data = energy_month, aes(x= Period, y=mtoe, group=Sector, fill=Sector))+
+  scale_fill_brewer(palette = "Set1")+ 
+  geom_line(data = uk_emission_year, aes(x=Period, y=`Total emission`/2.5), colour="black")+
+  geom_point(data = uk_emission_year, aes(x=Period, y=`Total emission`/2.5), colour="black")+
+  scale_x_date(date_labels = "%Y", date_breaks = "36 month", limits = c(as.Date("1996-01-01"), as.Date("2015-01-01")), expand = c(0.01,0.01)) + 
+  scale_y_continuous(sec.axis = sec_axis(~.*2.5, name = "Total UK emissions (kT)"),expand = c(0.01,0.01))+
+  labs(y="Monthly energy consumption (mtoe)")
+
+
+```
+
+
+Use annual data to show the long-term trend of UK energy mix
+
+```{r}
+
+list_sheet <- readxl::excel_sheets("./Primary_energy_consumption_mix_1970_2015.xlsx") %>% 
+  as.list()
+
+class(list_sheet)
+
+list_sheet %>% 
+  as.list()
+
+read_sheet_clean <- function(i){
+  temp <- readxl::read_xlsx("./Primary_energy_consumption_mix_1970_2015.xlsx" , sheet = i , col_names = T) %>% 
+    gather(key = Year, -X__1, value = value) %>% 
+    mutate(value = ifelse(value == "..", 0, value)) %>% 
+    mutate(value = as.numeric(value))
+  
+  return(temp)
+}
+
+
+
+lapply(list_sheet, read_sheet_clean) %>% 
+  bind_rows() %>% 
+  setnames(c("Sector", "Year", "mtoe")) %>% 
+  mutate(Year = as.numeric(Year)) %>% 
+  #reshape(idvar = "Sector", timevar = "Year", direction = "wide")
+  spread(key = Sector, value = mtoe, fill = 0) %>% 
+  mutate(Renewable = (`Hydro electricity`+ `Wind & Hydro electricity`+`Wind, Solar PV & Hydro electricity`)) %>% 
+  #names()
+  select(Year, 
+         Import = `Net electricity imports`, 
+         Bioenergy = `Bioenergy & waste`, 
+         Renewable, 
+         Natural_gas = `Natural gas`, 
+         Nuclear = `Nuclear electricity`, 
+         Oil = Petroleum, 
+         Coal
+         ) %>% 
+  gather(key = Sector, -Year,value = mtoe) %>% 
+  mutate(Sector = factor(Sector, levels = c("Import","Bioenergy","Renewable", "Natural_gas" ,
+                                            "Nuclear", "Oil", "Coal"))) %>% 
+  group_by(Year) %>% 
+  summarise(sum = sum(mtoe))
+  ggplot()+ 
+    geom_bar(aes(x=Year, y=mtoe, fill = Sector), stat = "identity") + 
+    #scale_fill_brewer("Dark2")
+    scale_fill_manual(values=c("#ff6f69", "lightgreen", "#008744", "#f37736", "#03396c", "#6e7f80", "grey"))+
+    theme_minimal()+
+    labs(y="Mtoe")+
+    theme(legend.position = "right") ->temp_fig
+
+temp_fig
+
+( 214- 192) / 214
+214*0.2
+
+```
+
+
+
+
+
+
+
+The diagram above shows a significant monthly variation in fuel consumption, with an overall decliding trend of both energy consumption and CO2 emission. 
+
+
+
+```{r}
+energy_uk_Qtr <- read_csv("../../Energy_UK/Data_energy/UK_quarterly_energy_sector_Q3_2017.csv", col_names = T) %>% 
+  gather(key = "Sector", value = "ktoe", -Year, -Quarter) %>% 
+  mutate(ktoe = as.numeric(ktoe)) %>% 
+  mutate(Season = ifelse(grepl("unadjusted", Sector), "unadjusted", "adjusted")) %>% 
+  mutate(ConsumerSector = ifelse(grepl("Final Domestic Consumption", Sector), "Domestic", "UK")) %>% 
+  mutate(SectorType = gsub(".*by ", "by_", Sector)) %>% 
+  mutate(SectorType = gsub("-.*", "", SectorType)) %>% 
+  mutate(Sector = gsub(".*-", "", Sector)) %>% 
+  mutate(Qtr = as.yearqtr(paste(Year, gsub("\\D", "", Quarter)), format="%Y %q")) %>% 
+  mutate(Date = as.Date(Qtr)) 
+
+#names(energy_Q)
+
+```
+
+```{r}
+energy_uk_Qtr %>% 
+  filter(Sector !="Total" & SectorType == "by_fuel") %>% 
+  ggplot(aes(group=Season))+
+    facet_wrap(~interaction(Season, ConsumerSector))+
+    geom_line(aes(x=Qtr, y=ktoe, group = Sector, colour = Sector)) + 
+    scale_colour_brewer(palette = "Set1")+
+    theme(legend.position = "bottom")
+
+```
+```{r}
+energy_uk_Qtr %>% 
+  filter(ConsumerSector == "Domestic", Sector != "Total") %>% 
+  ggplot(aes(x=Qtr, y=ktoe, group=Sector, colour=Sector))+
+    facet_wrap(~Season)+
+    geom_line()+
+    labs(title = "Domestic")+
+    scale_x_yearqtr(n = 4, format = "%Y")+
+    theme(legend.position = "bottom")
+
+```
+
+
+```{r}
+energy_uk_Qtr %>%  
+  filter(Sector != "Total" & SectorType=="by_fuel") %>% 
+  ggplot()+
+    geom_line(aes(x=Qtr, y=ktoe, group = interaction(ConsumerSector, Sector), colour =interaction(ConsumerSector, Sector) ))+ 
+    scale_colour_brewer(palette = "Set1")+
+    theme(legend.position = "bottom")
+
+```
+
+
+```{r}
+energy_uk_Qtr %>%  
+  filter(Sector == "Gas" & ConsumerSector=="UK" ) %>% 
+  ggplot(aes(x=Qtr, y=ktoe, group=Season, colour = Season))+
+    geom_line()+
+    geom_point()+
+    labs(title="UK gas consumption: weather adjusted vs unadjusted")
+
+```
+
+```{r}
+energy_uk_Qtr %>%  
+  filter(ConsumerSector=="UK" & SectorType=="by_fuel" & Sector !="Total") %>% 
+  ggplot(aes(x=Qtr, y=ktoe, group=interaction(Season, Sector), colour = interaction(Season, Sector)))+
+    #facet_grid(Sector~.)+
+    geom_line()+
+    geom_point()+
+    scale_colour_brewer(palette = "Paired") +
+    labs(title="UK energy consumption: weather adjusted vs unadjusted" , 
+         colour="Sector")+
+    theme(legend.position = "bottom")
+
+```
+
+
+
+```{r}
+energy_uk_Qtr %>% 
+  filter(Sector != "Total" & SectorType=="by_fuel") %>% 
+  ggplot(aes(group=Season))+
+    facet_wrap(~Season)+
+    geom_line(aes(x=Qtr, y=ktoe, group = interaction(ConsumerSector, Sector), colour = interaction(ConsumerSector, Sector))) + 
+    scale_colour_brewer(palette = "Set1")+
+    theme(legend.position = "bottom")+
+    labs(title="Energy consumption by sector: weather adjusted vs unadjusted", 
+         colour="Fuel type")
+
+```
+
+```{r}
+energy_uk_Qtr %>% 
+  filter(Sector != "Total" & SectorType=="by_fuel") %>% 
+  ggplot(aes(group=Season))+
+    facet_grid(ConsumerSector ~ Season)+
+    geom_line(aes(x=Qtr, y=ktoe, group = Sector, colour = Sector)) + 
+    scale_colour_brewer(palette = "Set1")+
+    theme(legend.position = "bottom")+
+    labs(title="Energy consumption by fuel types", 
+         colour="Fuel type")
+
+```
+
+
+```{r}
+energy_uk_Qtr %>% 
+  filter(Sector != "Total" & SectorType=="by_fuel"& ConsumerSector == "Domestic") %>% 
+  ggplot(aes(group = Season))+
+    facet_grid(Sector ~ Season)+
+    geom_line(aes(x=Qtr, y=ktoe, group = Sector, colour = Sector)) + 
+    geom_point(aes(x=Qtr, y=ktoe, group = Sector, colour = Quarter), size = 0.5) + 
+    theme(legend.position = "bottom")+
+    #scale_x_continuous(breaks = seq(min(Q_type$Qtr), max(Q_type$Qtr)))+
+    scale_x_yearqtr(n = 3, format = "%Y-%q") + 
+    labs(title="Domestic quarterly consumption: weather adjusted vs unadjusted ", 
+         colour="Fuel type")
+```
+
+
+
+```{r}
+head(co2_la)
+
+unique(co2_la$City)
+
+co2_la[City == "Suffolk Coastal"]
+```
+
+
+## Northumberland vs Suffolk Coastal
+
+Northumberland is found to be the only local authority in the UK that has a negative emission value. This is caused by a great amount of emission absorption from "land use". 
+
+
+
+```{r}
+co2_raw %>% 
+  filter(LAD14NM == "Northumberland"| LAD14NM == "Suffolk Coastal") %>%  
+  dplyr::select(Year, 
+                City = LAD14NM, 
+                Industry_elec = A..Industry.and.Commercial.Electricity, 
+                Industry_gas = B..Industry.and.Commercial.Gas, 
+                Industry_install = C..Large.Industrial.Installations, 
+                Industry_other = D..Industrial.and.Commercial.Other.Fuels, 
+                Industry_agriculture = E..Agriculture,
+                Domestic_ele = F..Domestic.Electricity, 
+                Domestic_gas = G..Domestic.Gas, 
+                Domestic_other = H..Domestic..Other.Fuels., 
+                Transport_ARoad = I..Road.Transport..A.roads., 
+                Transport_motorway = J..Road.Transport..Motorways., 
+                Transport_minor = K..Road.Transport..Minor.roads., 
+                Transport_rail = L..Diesel.Railways, 
+                Transport_other = M..Transport.Other, 
+                LandUse = N..LULUCF.Net.Emissions) %>% 
+  gather(key = Sector, value = Emission, -Year, -City) %>% 
+  ggplot()+
+    facet_grid(City ~.) +
+    geom_bar(aes(x=Year, y=Emission, fill=Sector), stat="Identity") +
+    theme(legend.position = "bottom")+
+    geom_hline(yintercept = 0)
+
+
+```
+
+```{r}
+head(co2_la,20)
+
+co2_la %>% 
+  filter(Year == 2015 & Total <0)
+```
+
+```{r}
+
+head(co2_la)
+
+temp <- co2_la %>% 
+  group_by(Year) %>% 
+  #summarise(q05=quantile(Total, probs=0.001), mean=mean(Total), n=length(Total)) %>% 
+  summary(Total)
+
+co2_la %>% 
+  filter(Year == 2005 | Year ==2015) %>% 
+  ggplot()+
+    geom_histogram(aes(Total, group=Year, fill=Year) , colour="black", binwidth = 500)
+
+```
+
+
+```{r}
+co2_la %>% 
+  filter(Year == 2015) %>% 
+  arrange(-Total) %>% 
+  ggplot()+
+    geom_bar(aes(x=City, y=Total), stat="identity")
+
+head(temp)
+```
+
+# Low Carbon City 
+
+It is not impossible to build a net-zero building, or even a net-zero building stock, providing the city has a deep enough pocket. The most ambitious case would be to demolish and rebuild all buildings to make them absolutely efficient. So that's the emissions from domestic sector reduced, or even cut clean. But that's only 30% of the total emissions that a city produces. Another 30% come from industry and the rest from transport. Would that mean, they are the bottleneck? This is the difference of a city-scale project to a building-scale one. 
+
+This study, therefore, will investigate the hard bottleneck for a city to be low/zero carbon. How will it be different to merely improving efficiency? To make the improvement(s) more coherent and well integrated. To avoid patchy refurbishments or so-called acupuncture solutions. 
+
+
+
+1) Cities having the greatest CO2 reduction
+
+2) Features of emissions sources - max/min of domestic, non-domestic, and transport 
+
+3) Causes for current reductions in emissions - is that really about decarbonisation from grid? 
+
+4) Seasonal variation - what this can be used? 
+
+
+
+```{r}
+head(co2_la)
+
+co2_la %>% 
+  mutate(pInd = Industry / Population, pDom = Domestic / Population, pTrn = Transport / Population) %>% 
+  filter(City != "City of London") %>% 
+  dplyr::select(City, Year, pInd, pDom, pTrn) %>% 
+  gather(key = Category, value = Emission, -Year, -City ) %>% 
+  group_by(Year, Category) %>% 
+  summarise(mean = mean(Emission), median = median(Emission), sd = sd(Emission), 
+            min = min(Emission), max=max(Emission), `10%` = quantile(Emission, 0.1), 
+            `45%` = quantile(Emission, 0.45), `50%` = quantile(Emission, 0.5), 
+            `55%` = quantile(Emission, 0.55), `90%`= quantile(Emission, 0.9) ) %>% 
+  ggplot()+
+    geom_ribbon(aes(Year, ymin=`45%`, ymax=`55%`, group= Category, fill = Category), alpha = 0.2)+
+    geom_line(aes(Year, median, group=Category, colour=Category)) +
+    scale_y_continuous(limits = c(0,3.2))
+    geom_errorbar(aes(Year, ymin = `45%`, ymax = `55%`, group = Category, colour = Category),stat = "Identity", size = 0.2, width = 0.2)
+
+
+
+```
+
+
+
+```{r}
+head(co2_la, 20)
+
+```
+
+```{r}
+temp <- co2_la %>% 
+  filter(Year == 2010 & City != "City of London") %>%
+  mutate(Ind_person = Industry/Population) %>% 
+  dplyr::select(City, Ind_total = Industry, Ind_person ) 
+
+fig_1 <- ggplot(temp)+
+  geom_histogram(aes(Ind_total), fill = "blue", colour = "grey", bins=100)
+
+fig_2 <- ggplot(temp)+
+  geom_histogram(aes(Ind_person), fill = "green", colour = "grey", bins = 100)
+
+grid.arrange(fig_1, fig_2, nrow=2, heights=c(1,1))
+
+summary(temp)
+
+
+hist(temp$Ind_person)
+head(temp, 20)
+
+
+```
+
+```{r}
+head(co2_la, 20)
+```
+
+Q1. Does the proportion of transport-related emissions vary among different cities? 
+
+The diagram shows the proprotion of transport-related emissions compared with industry and domestic. It shows that the proportion of the transport sector has been rising over the last ten years but not significantly. 
+
+Note: the "grand total" of emissions of each city differs slightly with the sum of industry, domestic, and transport. The difference is caused by land use related emissions. 
+
+```{r}
+co2_la %>% 
+  mutate(pt_transport = Transport / (Industry + Domestic + Transport)) %>% 
+  dplyr::select(City, Year, pt_transport) %>% 
+  group_by(Year) %>% 
+  summarise(mean_transport_proportion = mean(pt_transport)) %>% 
+  ggplot()+
+    geom_line(aes(Year, mean_transport_proportion))+
+    geom_point(aes(Year, mean_transport_proportion))+
+    scale_y_continuous(limits = c(0, 0.4)) +
+    scale_x_continuous(limits = c(2005, 2015)) +
+    geom_text(aes(x= Year, y= mean_transport_proportion, label= percent(mean_transport_proportion)), nudge_y = 0.02)+
+    labs(title="Proportion of emissions from transport", 
+         y = "Average of all cities")
+  
+```
+
+
+
+```{r}
+co2_la %>% 
+  mutate(sum=Industry + Domestic + Transport, 
+         pt_ind = Industry/sum, 
+         pt_dom = Domestic/sum, 
+         pt_trn = Transport/sum) %>% 
+  dplyr::select(Year, City, pt_ind, pt_dom, pt_trn) %>%
+  group_by(Year) %>% 
+  summarise(ind=mean(pt_ind), dom = mean(pt_dom), trn = mean(pt_trn)) %>% 
+  gather(key = Category, value = Proportion, -Year) %>% 
+  #head(20)
+  ggplot(aes(Year, Proportion, group = Category))+
+    geom_bar(aes(group = Category, fill = Category), stat="Identity")+
+    geom_text(aes(label= percent(round(Proportion,2))),position = position_stack(vjust=.5))+
+    scale_x_continuous(breaks = seq(2005, 2015, 1))
+  
+
+```
+
+Plot the emission data on GIS 
+
+```{r}
+install.packages("sf")
+library(sf)
+
+city_gis <- sf::st_read("../../GIS/Cities_ONS/Local_Authority_Districts_December_2016_Full_Clipped_Boundaries_in_Great_Britain.shp") %>% 
+  mutate(City = lad16nm) %>% 
+  left_join(co2_la, by="City")
+  
+
+southEng <- city_gis %>% 
+  st_intersection(st_set_crs(st_as_sf(as(raster::extent(-2, -0.5, 50.5, 51.5), "SpatialPolygons")), st_crs(.))) 
+
+head(southEng)
+```
+
+```{r}
+southEng %>% 
+  ggplot()+
+    geom_sf(aes(fill = Person), size=0.1)+
+    scale_fill_gradientn(colours = terrain.colors(5))+
+    labs(fill = "CO2 per person")
+```
+
+
+
+
+
+```{r}
+london_gis <- city_gis %>% 
+  st_intersection(st_set_crs(st_as_sf(as(raster::extent(-0.6, 0.4, 51.25, 51.7), "SpatialPolygons")), st_crs(.))) 
+
+#head(london_gis)
+#length(unique(london_gis$City))
+
+#unique(london_gis$Region)
+```
+
+
+```{r}
+ggplot(london_gis)+
+  geom_sf(aes(fill = Total, colour = Region, size = Region)) +
+  scale_fill_gradientn(colours = terrain.colors(5))+
+  discrete_scale("colour", "manual", palette_Dark2)+
+  scale_size_manual(values = c("South East"= 0, "East of England" = 0, "Greater London" = 0.5)) + 
+  #scale_colour_brewer(palette = "Dark2")+
+  labs(fill = "Total CO2")+
+  theme(legend.position = "none")
+
+```
+
+```{r}
+
+london_gis %>% 
+  filter(Region == "Greater London") %>% 
+  ggplot()+
+    geom_sf(aes(fill = Total)) +
+    scale_fill_gradient(high = "#CC0000", low = "#33FF00")+
+    #scale_fill_gradientn(colours = terrain.colors(5))+
+    discrete_scale("colour", "manual", palette_Dark2)+
+    labs(fill = "Total CO2")+
+    #theme(legend.position = "bottom")+
+    theme_light()
+
+```
+
+At this moment, I feel the study on cities' emission variations is not good enough. A quick recap of research questions: 
+
+1) Cities having the greatest CO2 reduction
+
+2) Features of emissions sources - max/min of domestic, non-domestic, and transport 
+
+3) Causes for current reductions in emissions - is that really about decarbonisation from grid? 
+
+4) Seasonal variation - what this can be used? 
+
+Before that, it is discovered that the "grand total" of cities' emissions differs slightly with the sum of industry, domestic, and transport. And it is also discovered that the distribution of these three sectors varies significantly. 
+
+TASK 1: TO INVESTIGATE THE VARIATION OF EMISSION CONTRIBUTIONS FROM ALL UK CITIES. 
+
+Solution: radar diagrams will be used to see how cities vary in terms of emission distribution. 
+
+
+
+
+Names from `co2_raw`
+
+ [1] "Region.Name"                              "Second.Tier.Authority"                   
+ [3] "LAD14NM"                                  "LAD14CD"                                 
+ [5] "Year"                                     "A..Industry.and.Commercial.Electricity"  
+ [7] "B..Industry.and.Commercial.Gas"           "C..Large.Industrial.Installations"       
+ [9] "D..Industrial.and.Commercial.Other.Fuels" "E..Agriculture"                          
+[11] "Industry.and.Commercial.Total"            "F..Domestic.Electricity"                 
+[13] "G..Domestic.Gas"                          "H..Domestic..Other.Fuels."               
+[15] "Domestic.Total"                           "I..Road.Transport..A.roads."             
+[17] "J..Road.Transport..Motorways."            "K..Road.Transport..Minor.roads."         
+[19] "L..Diesel.Railways"                       "M..Transport.Other"                      
+[21] "Transport.Total"                          "N..LULUCF.Net.Emissions"                 
+[23] "Grand.Total"                              "Population"                              
+[25] "Per.Capita.Emissions..t."               
+
+A number (132) of local authorities are found to have negative emissions in the LULUCF sector, meaning they are absorbing emissions. Northumberland is one of them and has a significantly high value in this sector. These LAs will not be included in the radar diagrams. This means the radar diagram will only consider the BIG THREE sectors, and the proportion refers to the percentage of each sector against the sum of three. 
+
+```{r}
+co2_raw %>% 
+  filter(N..LULUCF.Net.Emissions < 0 ) %>% 
+  nrow()/11
+
+```
+
+```{r}
+# Percentage of three sectors of emissions, excluding land use negative cities
+la_3secPerc <- co2_raw %>% 
+  filter(N..LULUCF.Net.Emissions > 0) %>%
+  #head()
+  dplyr::select(City = LAD14NM, 
+         Year, 
+         Ind = `Industry.and.Commercial.Total`, 
+         Dom = `Domestic.Total`, 
+         Tran = `Transport.Total`) %>% 
+  mutate(sum = Ind + Dom + Tran) %>% 
+  mutate(Industry = Ind / sum, 
+         Domestic = Dom / sum, 
+         Transport = Tran / sum) %>% 
+  filter(Year == 2015) %>% 
+  dplyr::select(City, Industry, Domestic, Transport) 
+
+# Portsmouth
+
+portsmouth_3secPerc <- la_3secPerc %>% 
+  filter(City == "Portsmouth")
+
+
+# mean and median of all cities 
+
+summary_3secPerc <- la_3secPerc %>% 
+  filter(City != "City of London") %>% 
+  summarise_each(funs(mean, median, min, max, sd), -City) %>% 
+  gather(variable, value) %>% 
+  #head()
+  separate(variable, c("var", "City"), sep="\\_") %>% 
+  #head()
+  spread(var,value)
+
+mean_3secPerc <-summary_3secPerc %>% 
+  filter(City == "mean")
+
+
+# max and min from each sector 
+
+extreme_3secPerc <- la_3secPerc %>% 
+  filter(Industry == min(Industry) | 
+         Industry == max(Industry) | 
+         Domestic == max(Domestic) |
+         Transport == max(Transport) |
+         Transport == min(Transport)) %>% 
+  rbind(rep(1,3),rep(0,3), . , mean_3secPerc) %>% 
+  column_to_rownames("City")
+
+extreme_3secPerc
+
+temp <- summary_3secPerc %>% 
+  filter(City == "mean") %>%
+  rbind(rep(1,3), rep(0,3), ., portsmouth_3secPerc) %>% 
+  column_to_rownames("City") ->ports_mean_compare
+  #head() 
+
+temp
+
+extreme_3secPerc
+```
+
+
+
+A function is created called `add.alpha`. 
+
+```{r}
+# Add transparency to colours
+add.alpha <- function(col, alpha=1){
+  if(missing(col))
+    stop("Please provide a vector of colours.")
+  apply(sapply(col, col2rgb)/255, 2, 
+                     function(x) 
+                       rgb(x[1], x[2], x[3], alpha=alpha))  
+}
+
+# when needed, additional colours with various level of transparency can be added into the list. 
+colour_temp <-add.alpha(colorRampPalette(brewer.pal(9,"Set2"))(5), 0.6)
+colour_temp <- add.alpha(c("#ff8080", "#ffff00", "light blue", "yellow", "red", "#FFFFFF"), 0.7)
+colour_temp
+```
 
 
 
@@ -834,6 +1770,620 @@ cityExample %>%
 
 
 
+
+
+
+
+
+The diagram above shows cities with the most uncommon emission features (e.g. high industrial emissions). A triangle can be seen in the very centre and it shows the average distribution of emissions in UK cities, where the three key sectors - industry, domestic, and transport - almost evenly share the contribution to carbon emissions. 
+
+```{r}
+# define the border colours for the polygons. The last one is for the uk mean, which is set to be black
+col_border <- c(add.alpha(c("#ff8080", "#ffff00", "#00ff40", "#00bfff", "#ff0000"),0.9), "black")
+
+# define the fill colour of the polygons, with the uk mean (last) set to almost transparent
+col_fill <- c("#ff8080", "#ffff00", "#00ff40", "#00bfff", "#ff0000", add.alpha("#ffffff",0.1) )
+
+# use the radarchart function to create a spider diagram
+radarchart( extreme_3secPerc  , axistype=1 , 
+    #custom polygon
+    pcol=col_border  , pfcol=col_fill , plwd=1 , plty=1,
+    #custom the grid
+    cglcol="grey", cglty=1, axislabcol="black", caxislabels=percent(seq(0,1,0.2)), cglwd=0.8,
+    #custom labels
+    vlcex=1
+    )
+legend(x=1, y=1, legend = rownames(extreme_3secPerc[-c(1,2),]), bty = "n", pch=20 , col=col_border  , text.col = "black", cex=1, pt.cex=1)
+```
+
+
+The emission distribution of Portsmouth is very close to the national average. 
+
+```{r}
+#ports_mean_compare
+
+#radarchart(ports_mean_compare)
+radarchart( ports_mean_compare, axistype=0 , 
+    #custom polygon
+    pcol=c("black", add.alpha("grey", 0.2)) , pfcol= c(add.alpha("white", 0.1), add.alpha("red",0.5)) , plwd=1 , plty=1,
+    #custom the grid
+    cglcol="grey", cglty=1, axislabcol="black", caxislabels=seq(0,20,5), cglwd=0.8,
+    #custom labels
+    vlcex=1
+    )
+legend(x=0.7, y=1, legend = rownames(ports_mean_compare[-c(1,2),]), bty = "n", pch=20 , col=c("black", "red")  , text.col = "black", cex=1, pt.cex=1)
+```
+
+
+```{r}
+names(co2_raw)
+
+```
+
+Recreate the radar diagram to include more variables
+
+```{r}
+head(co2_raw)
+# Percentage of three sectors of emissions, excluding land use negative cities
+la_allSecPerc <- co2_raw %>% 
+  filter(N..LULUCF.Net.Emissions > 0) %>%
+  mutate(IndEle = `A..Industry.and.Commercial.Electricity` / (`Grand.Total` - `N..LULUCF.Net.Emissions`), 
+         IndGas = `B..Industry.and.Commercial.Gas` / (`Grand.Total` - `N..LULUCF.Net.Emissions`), 
+         IndLarge = `C..Large.Industrial.Installations` / (`Grand.Total` - `N..LULUCF.Net.Emissions`), 
+         IndOther = `D..Industrial.and.Commercial.Other.Fuels`/(`Grand.Total` - `N..LULUCF.Net.Emissions`), 
+         Agriculture = `E..Agriculture` / (`Grand.Total` - `N..LULUCF.Net.Emissions`), 
+         DomEle = `F..Domestic.Electricity` / (`Grand.Total` - `N..LULUCF.Net.Emissions`), 
+         DomGas = `G..Domestic.Gas` / (`Grand.Total` - `N..LULUCF.Net.Emissions`), 
+         DomOther = `H..Domestic..Other.Fuels.` / (`Grand.Total` - `N..LULUCF.Net.Emissions`), 
+         ARoad = `I..Road.Transport..A.roads.`/ (`Grand.Total` - `N..LULUCF.Net.Emissions`), 
+         Motorways = `J..Road.Transport..Motorways.` / (`Grand.Total` - `N..LULUCF.Net.Emissions`), 
+         MinorRoads = `K..Road.Transport..Minor.roads.` / (`Grand.Total` - `N..LULUCF.Net.Emissions`), 
+         Railways = `L..Diesel.Railways` / (`Grand.Total` - `N..LULUCF.Net.Emissions`), 
+         TranOther = `M..Transport.Other` / (`Grand.Total` - `N..LULUCF.Net.Emissions`),        
+         LandUse = `N..LULUCF.Net.Emissions` / (`Grand.Total` - `N..LULUCF.Net.Emissions`) ) %>%   dplyr::select(City = LAD14NM, 
+         Year, 
+         IndEle , 
+         IndGas , 
+         IndLarge , 
+         IndOther  , 
+         Agriculture , 
+         DomEle , 
+         DomGas , 
+         DomOther , 
+         ARoad , 
+         Motorways , 
+         MinorRoads , 
+         Railways , 
+         TranOther ,        
+         LandUse ) %>% 
+  filter(Year == 2015) 
+  
+# Portsmouth
+
+portsmouth_allSecPerc <- la_allSecPerc %>% 
+  #dplyr::select(-Year) %>% 
+  filter(City == "Portsmouth") %>% 
+  column_to_rownames("City") 
+
+
+# mean and median of all cities 
+head(la_allSecPerc)
+summary_allSecPerc <- la_allSecPerc %>% 
+  filter(City != "City of London") %>% 
+  summarise_each(funs(mean, median, min, max, sd), -City) %>% 
+  gather(variable, value) %>% 
+  #head()
+  separate(variable, c("var", "City"), sep="\\_") %>% 
+  #head()
+  spread(var,value)
+
+mean_allSecPerc <-summary_allSecPerc %>% 
+  filter(City == "mean")
+
+
+# max and min from each sector 
+
+extreme_allSecPerc <- la_allSecPerc %>% 
+  filter(IndEle == min(IndEle)| 
+         IndEle == max(IndEle)|
+         IndGas == min(IndGas)|
+         IndGas == max(IndGas)| 
+         IndLarge == min(IndLarge) | 
+         IndLarge == max(IndLarge) | 
+         IndOther == min(IndOther) |
+         IndOther == max(IndOther) | 
+         Agriculture == min(Agriculture) |
+         Agriculture == max(Agriculture) | 
+         DomEle == min(DomEle) | 
+         DomEle == max(DomEle) | 
+         DomGas == min(DomGas) |
+         DomGas == max(DomGas) |
+         DomOther == min(DomOther) |
+         DomOther == max(DomOther) | 
+         ARoad == min(ARoad) |
+         ARoad == max(ARoad) | 
+         Motorways == min(Motorways) | 
+         Motorways == max(Motorways) | 
+         MinorRoads == min(MinorRoads) | 
+         MinorRoads == max(MinorRoads) | 
+         Railways == min(Railways) | 
+         Railways == max(Railways) | 
+         TranOther == min(TranOther) |
+         TranOther == max(TranOther) |        
+         LandUse == min(LandUse) | 
+         LandUse == max(LandUse) ) %>% 
+  #dplyr::select(-Year) %>% 
+  rbind(rep(1,3),rep(0,3), . , mean_allSecPerc) %>%
+  dplyr::select(-Year) %>% 
+  column_to_rownames("City")
+
+
+
+
+
+head(extreme_allSecPerc, 100)
+mean_allSecPerc
+
+names(summary_allSecPerc)
+head(portsmouth_allSecPerc)
+
+#temp <- summary_allSecPerc %>% 
+#  filter(City == "mean") %>%
+#  rbind(rep(1,14), rep(0,14), ., portsmouth_allSecPerc) %>% 
+#  column_to_rownames("City") ->ports_mean_compare
+#  #head() 
+
+```
+
+
+
+```{r}
+
+max(extreme_allSecPerc[-c(1,2),])
+extreme_allSecPerc
+
+# define the border colours for the polygons. The last one is for the uk mean, which is set to be black
+col_border <- c(add.alpha(c("#ff8080", "#ffff00", "#00ff40", "#00bfff", "#ff0000"),0.1), "black")
+
+# define the fill colour of the polygons, with the uk mean (last) set to almost transparent
+col_fill <- c("#ff8080", "#ffff00", "#00ff40", "#00bfff", "#ff0000", add.alpha("#ffffff",0.1) )
+
+# use the radarchart function to create a spider diagram
+radarchart( extreme_allSecPerc[1:4, ]  , axistype=1 , 
+    #custom polygon
+    pcol=col_border  , pfcol=col_fill , plwd=1 , plty=1,
+    #custom the grid
+    cglcol="grey", cglty=1, axislabcol="black", caxislabels=percent(seq(0,1,0.2)), cglwd=0.8,
+    #custom labels
+    vlcex=1
+    )
+legend(x=1, y=1, legend = rownames(extreme_allSecPerc[3:6, ][-c(1,2),]), bty = "n", pch=20 , col=col_border  , text.col = "black", cex=1, pt.cex=1)
+```
+
+
+Notes: leaflet() is a good tool to use for getting basemap
+
+
+
+```{r}
+include_graphics(path = "./thought1.JPG")
+
+```
+
+```{r}
+co2_la %>% 
+  filter(Year == 2015) %>% 
+  arrange(desc(Person)) %>%
+  head(10) %>% 
+  ggplot()+
+    geom_bar(aes(x=City, y=Person), stat="identity")+ 
+    coord_flip()
+```
+
+
+
+```{r}
+head(co2_la)
+
+co2_la %>% 
+  filter(Year == 2015) %>% 
+  arrange(desc(Person)) %>%
+  head(10) %>% 
+  ggplot()+
+    geom_bar(aes(x=reorder(City, Person), y=Person), stat="identity")+
+    coord_flip()
+ 
+min(co2_la$Person)
+
+```
+Names of `co2_la`: 
+
+ [1] "Region"      "City"        "Year"        "Total"       "Population"  "Person"      "Industry"   
+ [8] "Domestic"    "Transport"   "Electricity" "Gas"   
+
+```{r}
+#names(co2_la)
+co2_la %>% 
+  filter(Year == 2015) %>%  # Only choose 2015 data
+  mutate(Industry=Industry/Population, Domestic=Domestic/Population, Transport=Transport/Population) %>% 
+  dplyr::select(City, Industry, Domestic, Transport) %>%  # select co2 from each category
+  head(10) %>% 
+  gather(key = "Sector", value = "CO2", -City ) %>% 
+  ggplot()+
+    geom_bar(aes(x=reorder(City, CO2), y=CO2, fill = Sector), stat="identity" )+
+    coord_flip()
+  
+```
+
+
+```{r}
+p <- ggplot(mpg, aes(class, hwy))
+p + geom_boxplot()
+head(mpg)
+
+co2_la %>% 
+  filter(Year == 2015) %>%  # Only choose 2015 data
+  mutate(Industry=Industry/Population, Domestic=Domestic/Population, Transport=Transport/Population) %>% 
+  dplyr::select(City, Domestic, Transport) %>%  # select co2 from each category
+  head(10) %>% 
+  gather(key = "Sector", value = "CO2", -City ) %>% 
+  ggplot()+
+    geom_boxplot(aes(Sector, CO2))
+
+```
+
+```{r}
+co2_la %>% 
+  filter(Year == 2015) %>%  # Only choose 2015 data
+  mutate(Industry=Industry/Population, Domestic=Domestic/Population, Transport=Transport/Population) %>% 
+  dplyr::select(City, Industry, Domestic, Transport) %>%  # select co2 from each category %>% 
+  ggplot()+
+    geom_histogram(aes(Industry), binwidth = 2) + 
+    geom_vline(xintercept = quantile((co2_la$Industry/co2_la$Population), 0.9))+
+    geom_text(aes(x=quantile((co2_la$Industry/co2_la$Population), 0.9), 
+                  y = 100, 
+                  label=paste("99%:",round(quantile((co2_la$Industry/co2_la$Population), 0.9),2))), 
+              hjust = -0.1)
+  head(10) 
+
+quantile((co2_la$Industry/co2_la$Population), 0.99)
+
+```
+
+gather(key = "Sector", value = "CO2", -City ) %>% 
+  ggplot()+
+
+```{r}
+co2_la %>% 
+  filter(Year == 2015) %>%  # Only choose 2015 data
+  mutate(Industry=Industry/Population, Domestic=Domestic/Population, Transport=Transport/Population) %>% 
+  dplyr::select(City, Industry, Domestic, Transport) %>%  # select co2 from each category %>% 
+  gather(key = "Sector", value = "CO2", -City ) %>% 
+  ggplot()+
+    #geom_histogram(aes(CO2, fill = Sector), position="dodge", binwidth = 1) +
+    geom_density(aes(x=CO2, colour = Sector))+
+    scale_x_continuous(limits = c(0,10))
+    #geom_vline(xintercept = quantile((co2_la$Industry/co2_la$Population), 0.9))+
+    #geom_text(aes(x=quantile((co2_la$Industry/co2_la$Population), 0.9), 
+    #              y = 100, 
+    #              label=paste("99%:",round(quantile((co2_la$Industry/co2_la$Population), 0.9),2))), 
+    #          hjust = -0.1)
+  #head(10) 
+
+
+
+```
+
+```{r}
+co2_la_person  <- co2_la %>% 
+  mutate(Industry = Industry / Population, 
+         Domestic = Domestic / Population, 
+         Transport = Transport / Population,
+         Electricity = Electricity / Population, 
+         Gas = Gas / Population)
+
+summary(co2_la_person)
+
+summary(co2_la)
+```
+
+
+# Correlation of co2 emissions with Gross Value Added
+
+The term gross value added (GVA) describes the level of economic activities of an area. This value, therefore, is assumed to be correlated with the co2 emissions, especially the amount of emissions from industry sector. 
+
+Data source: ONS, Regional Gross Value Added (Income Aproach) by Local Authority in the UK 1997 - 2015
+
+The GVA data (in excel format) are given in a number of sectors, as follows: 
+
+Total GVA
+Population
+GVA per head
+A: Agriculture
+BDE: Production other than manufacturing
+C: Manufacturing
+F: Construction
+GHI: Distribution
+J: Information and communication
+K: Finance
+L: Real Estate
+MN: Business services
+OPQ: Public administration
+RST: Other services
+
+
+headers of each sheet: 
+
+ [1] "Region"         "LAU1 code"      "LA name"        "SIC07 code"     "SIC07 Industry"
+ [6] "1997"           "1998"           "1999"           "2000"           "2001"          
+[11] "2002"           "2003"           "2004"           "2005"           "2006"          
+[16] "2007"           "2008"           "2009"           "2010"           "2011"          
+[21] "2012"           "2013"           "2014"           "2015"
+
+```{r}
+
+sheetNames <- c("Total GVA", 
+                "Population", 
+                "GVA per head" , 
+                "A Agriculture" , 
+                "BDE Production other"  , 
+                "C Manufacturing" ,
+                "F Construction" , 
+                "GHI Distribution" ,
+                "J Information and comms" , 
+                "K Finance" , 
+                "L Real estate" , 
+                "MN Business services" , 
+                "OPQ Public admin" , 
+                "RST Other services")
+
+
+#' Function to process each tab in the master XLS file
+#' 
+#' @param x the sheet name
+#' 
+ImportCSV <- function(x){
+  
+  temp <- readxl::read_excel("./regionalgvaibylainuk.xls", sheet = x, col_names = T, skip = 2)
+  
+  temp <- temp %>% 
+  mutate(LAcode = `LAU1 code`, 
+         City = `LA name`, 
+         Industry = `SIC07 Industry`) %>% 
+  dplyr::select(Region, LAcode, City, Industry, 
+                `1997`, `1998`, `1999`, `2000`, `2001`, `2002`, 
+                `2003`, `2004`, `2005`, `2006`, `2007`, `2008`, 
+                `2009`, `2010`, `2011`, `2012`, `2013`, `2014`, `2015`) %>% 
+  gather(key = "Year", value = "GVA", -Region, -LAcode, -City, -Industry) %>% 
+  dplyr::select(Region, LAcode, City, Industry, Year, GVA)
+
+  return(temp)
+}
+
+
+# Load all the sheets
+gva_city <- lapply(sheetNames, ImportCSV) %>%
+  bind_rows() # the "bind_row" binds all rows together. in this case, a long table is easier to manage
+
+gva_city <- as.data.frame(gva_city)
+
+gvaCity <- reshape(gva_city, timevar = "Industry", idvar = c("Region","City","LAcode","Year"), direction = "wide")
+
+head(gva_city)
+```
+
+
+Merge GVA dataset with emissions, to see if there's any correlation. 
+
+```{r}
+
+temp <- gvaCity %>% 
+  merge(co2_la, by = c("City", "Year"), all.y=T) 
+
+head(temp)
+summary(temp)
+
+```
+
+
+```{r}
+temp %>% 
+  dplyr::select(City, Year, 
+                gva_person = `GVA.All industries per head`,
+                emission_person = Person  ) %>% 
+  filter(Year == 2015 & gva_person < 1000000) %>%
+  #filter(Year == 2015 & emission_person < 8.7 & emission_person >0) %>% 
+  #head(20) %>% 
+  ggplot()+
+    geom_point(aes(x=gva_person, y = emission_person))
+#    scale_x_continuous()
+  
+
+```
+
+
+Had discussion with Luke, who informed that the regional GVA data is likely to be highly 
+
+```{r}
+gva2015 <- gvaCity %>% 
+  filter(Year == 2015)
+
+
+gva_gis <- sf::st_read("../../GIS/Cities_ONS/Local_Authority_Districts_December_2016_Full_Clipped_Boundaries_in_Great_Britain.shp") %>% 
+  mutate(City = lad16nm) %>% 
+  left_join(gva2015, by="City")
+  
+
+gva_southEng <- gva_gis %>% 
+  st_intersection(st_set_crs(st_as_sf(as(raster::extent(-2, -0.5, 50.5, 51.5), "SpatialPolygons")), st_crs(.))) 
+
+head(gva_southEng)
+
+gva_southEng %>% 
+  ggplot()+
+    geom_sf(aes(fill = `GVA.All.industries.per.head`))+
+    scale_fill_gradient(high = "red", low = "green")+
+    discrete_scale("colour", "manual", palette_Dark2)+
+    labs(fill = "GVA per person")+
+    #theme(legend.position = "bottom")+
+    theme_light()
+```
+
+
+
+```{r}
+names(gva_southEng)
+```
+
+
+
+
+```{r}
+head(gva_gis)
+
+gva_london <- gva_gis %>% 
+  filter(Region == "London")
+
+head(gva_london)
+
+gva_london%>% 
+  #filter(Region == "Greater London") %>% 
+  ggplot()+
+    geom_sf(aes(fill =`GVA.All industries`)) +
+    scale_fill_gradient(high = "red", low = "green")+
+    #scale_fill_gradientn(colours = terrain.colors(5))+
+    discrete_scale("colour", "manual", palette_Dark2)+
+    labs(fill = "GVA per person")+
+    #theme(legend.position = "bottom")+
+    theme_light()
+
+```
+
+```{r}
+max(gva_london$`GVA.All industries per head`)/min(gva_london$`GVA.All industries per head`)
+
+gva_london$`GVA.All industries per head` %>% 
+  max() %>% 
+  min()
+
+```
+
+
+```{r}
+#head(london_gis)
+
+london_gis %>% 
+  filter(Region == "Greater London") %>% 
+  ggplot()+
+    geom_sf(aes(fill = Total)) +
+    scale_fill_gradient(high = "red", low = "green")+
+    #scale_fill_gradientn(colours = terrain.colors(5))+
+    discrete_scale("colour", "manual", palette_Dark2)+
+    labs(fill = "Total CO2")+
+    #theme(legend.position = "bottom")+
+    theme_light()
+
+```
+
+
+To see the change of GVA over different regions 
+
+"Region"   "LAcode"   "City"     "Industry" "Year"     "GVA"     
+
+```{r}
+gva_population <- gva_city %>% 
+  filter(Industry == "Population") %>% 
+  mutate(Population = GVA) %>% 
+  dplyr::select(-Region, -LAcode, -Industry, -GVA) %>% 
+  arrange(City)
+
+library(zoo)
+
+head(gva_population)
+head(gva_city, 20)
+gva_city %>% 
+  dplyr::select(-LAcode) %>% 
+  filter(Industry != "Population" & Industry != "All industries per head") %>% 
+  merge(gva_population, by = c("City", "Year")) %>% 
+  #head(100)
+  group_by(Region, Year, Industry) %>% 
+  summarise(Region_GVA = sum(GVA), 
+            Total_population = sum(Population)) %>% 
+  ungroup() %>% 
+  #head(20)
+  filter(Industry == "All industries") %>% 
+  #head()
+  mutate(Ind_person = Region_GVA / Total_population) %>% 
+  mutate(Year = as.integer(Year)) %>% 
+  #head()
+  group_by(Region) %>% 
+  mutate(Change = (Ind_person / lag(Ind_person) - 1 ) ) %>% 
+  #head(20)
+  ggplot()+
+    geom_line(aes(x=Year, y=Change, colour=Region))+
+    scale_x_continuous(breaks = seq(1998,2015,1), limits = c(1998,2015))+
+    scale_y_continuous(limits = c(-0.1, 0.1))+
+    scale_colour_brewer(palette = "Set1")+
+    theme(legend.position = "bottom")
+  
+
+```
+
+
+
+
+
+
+
+```{r}
+ggplot(co2_region)+
+    geom_line(aes(x=Year, y=rPerson, group=Region, colour = Region))+
+    scale_x_continuous(breaks = seq(2005,2015,1))
+```
+
+```{r}
+co2_region %>% 
+  group_by(Region) %>% 
+  mutate(diff = (rPerson / lag(rPerson) - 1)) %>% 
+  ggplot()+
+    geom_line(aes(x=Year, y=diff, group = Region, colour = Region))+
+    geom_hline(yintercept = 0, linetype = 3)+
+    scale_y_continuous(limits = c(-0.25, 0.3))+
+    scale_x_continuous(breaks = seq(2005, 2015,1))
+    
+```
+
+
+Compare electricity vs gas in emission
+
+```{r}
+
+  
+co2_la %>% 
+  mutate(pElec = Electricity / Population, pGas = Gas/Population) %>% 
+  dplyr::select(Year, pElec, pGas) %>% 
+  group_by(Year) %>% 
+  summarise(emission_Electricity = sum(pElec), 
+            emission_Gas = sum(pGas)) %>%
+  mutate(percentage_Electricity = emission_Electricity/(emission_Electricity + emission_Gas), percentage_Gas = emission_Gas/(emission_Electricity + emission_Gas)) %>% 
+  #head(20)
+  #dplyr::select(-Electricity, -Gas) %>% 
+  gather(key , value,  -Year) %>% 
+  #head(60)
+  separate(key, c("Cat", "Sector"), sep = "_") %>% 
+  spread(Cat, value) %>% 
+  mutate(percentage = percent(round(percentage,2))) %>% 
+  #head(80)
+  ggplot()+
+    geom_bar(aes(x=Year, y=emission, fill=Sector, group=Year), stat="identity")+
+    geom_text(aes(x=Year, y=emission, label=percentage, group=Year, vjust=emission), position="stack" )
+
+```
+
+
+```{r}
+read.dbf("./")
+```
 
 
 
